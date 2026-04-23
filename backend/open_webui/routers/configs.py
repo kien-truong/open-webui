@@ -102,6 +102,8 @@ class OAuthClientRegistrationForm(BaseModel):
     client_id: str
     client_name: Optional[str] = None
     client_secret: Optional[str] = None
+    client_scope: Optional[str] = None
+    client_extra_params: Optional[dict] = None
 
 
 @router.post('/oauth/clients/register')
@@ -112,22 +114,24 @@ async def register_oauth_client(
     user=Depends(get_admin_user),
 ):
     try:
-        oauth_client_id = form_data.client_id
+        client_id = form_data.client_id
         if type:
-            oauth_client_id = f'{type}:{form_data.client_id}'
+            client_id = f'{type}:{form_data.client_id}'
 
         if form_data.client_secret:
             # Static credentials: skip dynamic registration, build from provided credentials
             oauth_client_info = await get_oauth_client_info_with_static_credentials(
                 request,
-                oauth_client_id,
+                client_id,
                 form_data.url,
-                oauth_client_id=form_data.client_id,
+                oauth_client_id=form_data.client_name,
                 oauth_client_secret=form_data.client_secret,
+                scope=form_data.client_scope,
+                extra_params=form_data.client_extra_params,
             )
         else:
             oauth_client_info = await get_oauth_client_info_with_dynamic_client_registration(
-                request, oauth_client_id, form_data.url
+                request, client_id, form_data.url
             )
         return {
             'status': True,

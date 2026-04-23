@@ -106,6 +106,7 @@ class OAuthClientInformationFull(OAuthClientMetadata):
     client_secret_expires_at: int | None = None
 
     server_metadata: Optional[OAuthMetadata] = None  # Fetched from the OAuth server
+    extra_params: Optional[dict] = None  # Additional parameters for the OAuth client
 
 
 from open_webui.env import GLOBAL_LOG_LEVEL
@@ -516,6 +517,8 @@ async def get_oauth_client_info_with_static_credentials(
     oauth_server_url: str,
     oauth_client_id: str,
     oauth_client_secret: str,
+    scope: Optional[str] = None,
+    extra_params: Optional[dict] = None,
 ) -> OAuthClientInformationFull:
     """
     Build an OAuthClientInformationFull from user-provided static credentials.
@@ -543,13 +546,6 @@ async def get_oauth_client_info_with_static_credentials(
                             log.error(f'Error parsing OAuth metadata from {url}: {e}')
                             continue
 
-        # Let the OAuth provider apply its default scopes.
-        # We intentionally do NOT join all scopes_supported here — that list
-        # represents every scope the server *can* grant, not what the client
-        # should request.  Requesting all of them is almost always wrong and
-        # can break providers like Entra ID that require resource-specific scopes.
-        scope = None
-
         # Determine token_endpoint_auth_method
         token_endpoint_auth_method = 'client_secret_post'
         if (
@@ -569,6 +565,7 @@ async def get_oauth_client_info_with_static_credentials(
             token_endpoint_auth_method=token_endpoint_auth_method,
             issuer=oauth_server_metadata_url,
             server_metadata=oauth_server_metadata,
+            extra_params=extra_params,
         )
 
         log.info(
@@ -707,10 +704,14 @@ class OAuthClientManager:
         if client_info.redirect_uris:
             redirect_uri = str(client_info.redirect_uris[0])
 
-        try:
-            auth_data = await client.create_authorization_url(redirect_uri=redirect_uri)
-            authorization_url = auth_data.get('url')
+        auth_params = {}
+        if client_info.extra_params:
+            auth_params.update(client_info.extra_params)
 
+        try:
+            auth_data = await client.create_authorization_url(redirect_uri=redirect_uri, **auth_params)
+            authorization_url = auth_data.get('url')
+            log.info(f'Auth url: {authorization_url}')
             if not authorization_url:
                 return True
         except Exception as e:
@@ -938,7 +939,12 @@ class OAuthClientManager:
 
         redirect_uri = client_info.redirect_uris[0] if client_info.redirect_uris else None
         redirect_uri_str = str(redirect_uri) if redirect_uri else None
-        return await client.authorize_redirect(request, redirect_uri_str)
+
+        auth_params = {}
+        if client_info.extra_params:
+            auth_params.update(client_info.extra_params)
+
+        return await client.authorize_redirect(request, redirect_uri_str, **auth_params)
 
     async def handle_callback(self, request, client_id: str, user_id: str, response):
         client = self.get_client(client_id) or self.ensure_client_from_config(client_id)

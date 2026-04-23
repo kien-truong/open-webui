@@ -60,6 +60,8 @@
 
 	let oauthClientId = '';
 	let oauthClientSecret = '';
+	let oauthClientScope: string | null = null;
+	let oauthClientExtraParams: string | null = null;
 
 	let enable = true;
 	let loading = false;
@@ -83,13 +85,37 @@
 			return;
 		}
 
+		let oauthClientExtraParamsObj: object | null = null;
+		if (oauthClientExtraParams) {
+			try {
+				oauthClientExtraParamsObj = JSON.parse(oauthClientExtraParams);
+			} catch (error) {
+				toast.error($i18n.t('OAuth extra params must be a valid JSON object'));
+				return;
+			}
+		}
+
 		// client_id is the tool server ID (used as the internal lookup key for both flows).
 		// For static, client_secret signals the backend to use the static credential path.
 		// The actual OAuth client_id/secret come from the connection info at save time.
-		const formData: { url: string; client_id: string; client_secret?: string } = {
+		const formData: {
+			url: string;
+			client_id: string;
+			client_name?: string;
+			client_secret?: string;
+			client_scope?: string;
+			client_extra_params?: object;
+		} = {
 			url: url,
 			client_id: id,
-			...(auth_type === 'oauth_2.1_static' ? { client_secret: oauthClientSecret } : {})
+			...(auth_type === 'oauth_2.1_static'
+				? {
+						client_name: oauthClientId,
+						client_secret: oauthClientSecret,
+						client_scope: oauthClientScope,
+						client_extra_params: oauthClientExtraParamsObj
+					}
+				: {})
 		};
 
 		const res = await registerOAuthClient(localStorage.token, formData, 'mcp').catch((err) => {
@@ -138,6 +164,20 @@
 				headers = JSON.stringify(_headers, null, 2);
 			} catch (error) {
 				toast.error($i18n.t('Headers must be a valid JSON object'));
+				return;
+			}
+		}
+
+		if (oauthClientExtraParams) {
+			try {
+				const _extraParams = JSON.parse(oauthClientExtraParams);
+				if (typeof _extraParams !== 'object' || Array.isArray(_extraParams)) {
+					throw new Error('OAuth extra params must be a valid JSON object');
+				}
+				oauthClientExtraParams = JSON.stringify(_extraParams, null, 2);
+			} catch (error) {
+				toast.error($i18n.t('OAuth extra params must be a valid JSON object'));
+				loading = false;
 				return;
 			}
 		}
@@ -313,6 +353,20 @@
 			}
 		}
 
+		if (oauthClientExtraParams) {
+			try {
+				const _extraParams = JSON.parse(oauthClientExtraParams);
+				if (typeof _extraParams !== 'object' || Array.isArray(_extraParams)) {
+					throw new Error('OAuth extra params must be a valid JSON object');
+				}
+				oauthClientExtraParams = JSON.stringify(_extraParams, null, 2);
+			} catch (error) {
+				toast.error($i18n.t('OAuth extra params must be a valid JSON object'));
+				loading = false;
+				return;
+			}
+		}
+
 		const connection = {
 			type,
 			url,
@@ -336,7 +390,14 @@
 				description: description,
 				...(oauthClientInfo ? { oauth_client_info: oauthClientInfo } : {}),
 				...(auth_type === 'oauth_2.1_static'
-					? { oauth_client_id: oauthClientId, oauth_client_secret: oauthClientSecret }
+					? {
+							oauth_client_id: oauthClientId,
+							oauth_client_secret: oauthClientSecret,
+							oauth_client_scope: oauthClientScope,
+							oauth_client_extra_params: oauthClientExtraParams
+								? JSON.parse(oauthClientExtraParams)
+								: undefined
+						}
 					: {})
 			}
 		};
@@ -364,6 +425,8 @@
 		oauthClientInfo = null;
 		oauthClientId = '';
 		oauthClientSecret = '';
+		oauthClientScope = null;
+		oauthClientExtraParams = null;
 
 		enable = true;
 		functionNameFilterList = '';
@@ -390,7 +453,10 @@
 			oauthClientInfo = connection.info?.oauth_client_info ?? null;
 			oauthClientId = connection.info?.oauth_client_id ?? '';
 			oauthClientSecret = connection.info?.oauth_client_secret ?? '';
-
+			oauthClientScope = connection.info?.oauth_client_scope ?? null;
+			oauthClientExtraParams = connection.info?.oauth_client_extra_params
+				? JSON.stringify(connection.info.oauth_client_extra_params, null, 2)
+				: null;
 			enable = connection.config?.enable ?? true;
 			functionNameFilterList = connection.config?.function_name_filter_list ?? '';
 			accessGrants = connection.config?.access_grants ?? [];
@@ -729,6 +795,17 @@
 													bind:value={oauthClientSecret}
 													placeholder={$i18n.t('Client Secret')}
 													required={false}
+												/>
+												<input
+													bind:value={oauthClientScope}
+													placeholder={$i18n.t('Scope')}
+													required={false}
+												/>
+												<Textarea
+													bind:value={oauthClientExtraParams}
+													placeholder={$i18n.t('Enter OAuth extra params in JSON format')}
+													required={false}
+													minSize={30}
 												/>
 											</div>
 										{/if}
