@@ -289,99 +289,113 @@ def get_parsed_and_base_url(server_url) -> tuple[urllib.parse.ParseResult, str]:
     return parsed, base_url
 
 
-async def get_authorization_server_discovery_urls(server_url: str) -> list[str]:
+def get_protected_resource_well_known_metadata_urls(server_url: str) -> list[str]:
     """
-    https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization
+    Generate well-known metadata URLs for protected resource discovery based on the server URL
+    https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-location
     """
+    urls = []
+    parsed, base_url = get_parsed_and_base_url(server_url)
+    if parsed.path and parsed.path != '/':
+        path = parsed.path.rstrip('/')
+        urls.append(
+            urllib.parse.urljoin(base_url, f'/.well-known/oauth-protected-resource{path}'),
+        )
+    urls.append(
+        urllib.parse.urljoin(base_url, '/.well-known/oauth-protected-resource'),
+    )
+    return urls
 
+
+async def get_authorization_servers(server_url: str) -> list[str]:
+    """
+    https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-location
+
+    """
     authorization_servers = []
-    try:
-        async with aiohttp.ClientSession(trust_env=True) as session:
+    metadata_urls = []
+
+    async with aiohttp.ClientSession(trust_env=True) as session:
+        # Try service discovery using WWW-Authenticate header
+        try:
+            # Step 1: Try to get resource metadata URL from WWW-Authenticate header
             async with session.post(
                 server_url,
-                json={'jsonrpc': '2.0', 'method': 'initialize', 'params': {}, 'id': 1},
+                json={'jsonrpc': '2.0', 'method': 'initialize', 'params': {'protocolVersion': '2025-11-25'}, 'id': 1},
                 headers={'Content-Type': 'application/json'},
                 ssl=AIOHTTP_CLIENT_SESSION_SSL,
             ) as response:
                 if response.status == 401:
-                    resource_metadata_urls = []
                     match = re.search(
                         r'resource_metadata=(?:"([^"]+)"|([^\s,]+))',
                         response.headers.get('WWW-Authenticate', ''),
                     )
                     if match:
-                        resource_metadata_urls = [match.group(1) or match.group(2)]
-                        log.debug(f'Found resource_metadata URL: {resource_metadata_urls[0]}')
-                    else:
-                        # Fall back to well-known resource metadata URIs (RFC 9728 §4.2)
-                        parsed, base_url = get_parsed_and_base_url(server_url)
-                        if parsed.path and parsed.path != '/':
-                            path = parsed.path.rstrip('/')
-                            resource_metadata_urls.append(
-                                urllib.parse.urljoin(base_url, f'/.well-known/oauth-protected-resource{path}')
+                        resource_metadata_url = match.group(1) or match.group(2)
+                        log.debug(f'Found resource_metadata URL: {resource_metadata_url}')
+                        metadata_urls.append(resource_metadata_url)
+        except Exception as e:
+            log.debug(f'MCP Protected Resource discovery failed: {e}')
+
+        # Step 2: Fetch Protected Resource metadata
+        metadata_urls.extend(get_protected_resource_well_known_metadata_urls(server_url))
+        for metadata_url in metadata_urls:
+            try:
+                async with session.get(metadata_url, ssl=AIOHTTP_CLIENT_SESSION_SSL) as resource_response:
+                    if resource_response.status == 200:
+                        resource_metadata = await resource_response.json()
+                        resource = resource_metadata.get('resource', '')
+                        if resource and resource != server_url:
+                            log.debug(
+                                f'Skipping resource metadata from {metadata_url} '
+                                f'due to resource mismatch: {resource} != {server_url}'
                             )
-                        resource_metadata_urls.append(
-                            urllib.parse.urljoin(base_url, '/.well-known/oauth-protected-resource')
-                        )
-                        log.debug(f'No resource_metadata in header, trying well-known URIs: {resource_metadata_urls}')
-
-                    # Fetch Protected Resource metadata from candidate URLs
-                    for resource_metadata_url in resource_metadata_urls:
-                        try:
-                            async with session.get(
-                                resource_metadata_url, ssl=AIOHTTP_CLIENT_SESSION_SSL
-                            ) as resource_response:
-                                if resource_response.status == 200:
-                                    resource_metadata = await resource_response.json()
-
-                                    servers = resource_metadata.get('authorization_servers', [])
-                                    if servers:
-                                        authorization_servers = servers
-                                        log.debug(f'Discovered authorization servers: {servers}')
-                                        break
-                        except Exception as e:
-                            log.debug(f'Failed to fetch resource metadata from {resource_metadata_url}: {e}')
                             continue
-    except Exception as e:
-        log.debug(f'MCP Protected Resource discovery failed: {e}')
+                        servers = resource_metadata.get('authorization_servers', [])
+                        if servers:
+                            log.debug(f'Discovered authorization servers from {metadata_url}: {servers}')
+                            authorization_servers = servers
+                            break
+            except Exception as e:
+                log.debug(f'Failed to fetch protected resource metadata from {metadata_url}: {e}')
 
-    discovery_urls = []
-    for auth_server in authorization_servers:
-        auth_server = auth_server.rstrip('/')
-        discovery_urls.extend(_build_well_known_urls(auth_server))
-
-    return discovery_urls
+    return authorization_servers
 
 
-def _build_well_known_urls(server_url: str) -> list[str]:
-    """Build RFC 8414 / OIDC Discovery well-known URLs for a server URL."""
-    parsed, base_url = get_parsed_and_base_url(server_url)
+def get_well_known_authorization_endpoints(authorization_servers: list[str]) -> list[str]:
+    """
+    Generate Authorization Metadata URLs
+    https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#authorization-server-metadata-discovery
+    """
     urls = []
-
-    if parsed.path and parsed.path != '/':
-        path = parsed.path.rstrip('/')
-        urls.extend(
-            [
-                urllib.parse.urljoin(base_url, f'/.well-known/oauth-authorization-server{path}'),
-                urllib.parse.urljoin(base_url, f'/.well-known/openid-configuration{path}'),
-                urllib.parse.urljoin(base_url, f'{path}/.well-known/openid-configuration'),
-            ]
-        )
-
-    urls.extend(
-        [
-            urllib.parse.urljoin(base_url, '/.well-known/oauth-authorization-server'),
-            urllib.parse.urljoin(base_url, '/.well-known/openid-configuration'),
-        ]
-    )
-
+    for server_url in authorization_servers:
+        parsed, base_url = get_parsed_and_base_url(server_url)
+        if parsed.path and parsed.path != '/':
+            tenant = parsed.path.rstrip('/')
+            urls.extend(
+                [
+                    urllib.parse.urljoin(
+                        base_url,
+                        f'/.well-known/oauth-authorization-server{tenant}',
+                    ),
+                    urllib.parse.urljoin(base_url, f'/.well-known/openid-configuration{tenant}'),
+                    urllib.parse.urljoin(base_url, f'{tenant}/.well-known/openid-configuration'),
+                ]
+            )
+        else:
+            urls.extend(
+                [
+                    urllib.parse.urljoin(base_url, '/.well-known/oauth-authorization-server'),
+                    urllib.parse.urljoin(base_url, '/.well-known/openid-configuration'),
+                ]
+            )
     return urls
 
 
 async def get_discovery_urls(server_url) -> list[str]:
-    urls = await get_authorization_server_discovery_urls(server_url)
-    urls.extend(_build_well_known_urls(server_url))
-    return urls
+    authorization_servers = await get_authorization_servers(server_url)
+    authorization_metadata_urls = get_well_known_authorization_endpoints(authorization_servers)
+    return authorization_metadata_urls
 
 
 # TODO: Some OAuth providers require Initial Access Tokens (IATs) for dynamic client registration.
